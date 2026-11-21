@@ -1,0 +1,79 @@
+#!/usr/sbin/nft -f
+# Core firewall, final rules. IDs match "Firewall Rules: Campus Network Segmentation".
+# The Core is the default gateway for every VLAN (eth2.10, eth2.50, ...). eth1 is the link to the Edge.
+# Internet-bound traffic is passed to the Edge, which enforces the Internet rules (R-05 to R-17, R-71).
+# The lab uses PostgreSQL (5432) where the design has Oracle (1521).
+
+table inet core
+delete table inet core
+
+define INTERNAL    = 10.10.0.0/16
+define FAC         = 10.10.10.0/24
+define BLDG        = 10.10.50.0/24
+define ADMIN       = 10.10.99.0/24
+define CORE        = 10.10.100.0/24
+define IDENT       = 10.10.105.0/24
+define RSTR        = 10.10.110.0/24
+define VPN         = 10.10.250.0/24
+define VPN_ADMIN   = 10.10.250.192/26
+define JUMP        = 10.10.99.10
+define UMBRELLA_VA = 10.10.100.10
+define DC1         = 10.10.105.10
+define BANNER      = 10.10.110.10
+define RECORDS_DB  = 10.10.110.20
+define PAY         = 10.10.110.30
+
+# AD client ports, to the domain controller only. dc1 pins its RPC ports to 49152-49159.
+define AD_TCP = { 88, 135, 389, 445, 464, 636, 3268, 3269, 49152-49159 }
+define AD_UDP = { 88, 123, 389, 464 }
+
+table inet core {
+  # Stands in for Palo Alto User-ID: IPs where a Finance user is logged in (./lab.sh finance-login <ip>)
+  set finance_users {
+    type ipv4_addr
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+
+    # Internet-bound: the Edge firewall applies the Internet rules
+    oifname "eth1" ip daddr != $INTERNAL counter accept comment "to Edge"
+
+    # FAC
+    ip saddr $FAC ip daddr $UMBRELLA_VA meta l4proto { tcp, udp } th dport 53 counter accept comment "R-18 DNS"
+    ip saddr $FAC ip daddr $DC1 tcp dport $AD_TCP counter accept comment "R-19 AD client ports"
+    ip saddr $FAC ip daddr $DC1 udp dport $AD_UDP counter accept comment "R-19 AD client ports"
+    ip saddr $FAC ip daddr $BANNER tcp dport 443 counter accept comment "R-20 Banner"
+    ip saddr @finance_users ip daddr $PAY tcp dport 443 counter accept comment "R-20 payment portal, Finance only"
+    ip saddr $FAC ip daddr $ADMIN counter log prefix "CORE R-21 DENY " group 1 drop
+
+    # BLDG
+    ip saddr $BLDG ip daddr $UMBRELLA_VA meta l4proto { tcp, udp } th dport 53 counter accept comment "R-35 DNS"
+    ip saddr $BLDG ip daddr $IDENT counter log prefix "CORE R-36 DENY " group 1 drop
+    ip saddr $BLDG ip daddr $FAC counter log prefix "CORE R-37 DENY " group 1 drop
+
+    # VPN pool
+    ip saddr $VPN ip daddr $UMBRELLA_VA meta l4proto { tcp, udp } th dport 53 counter accept comment "R-50 DNS"
+    ip saddr $VPN ip daddr $DC1 tcp dport $AD_TCP counter accept comment "R-51 AD client ports"
+    ip saddr $VPN ip daddr $DC1 udp dport $AD_UDP counter accept comment "R-51 AD client ports"
+    ip saddr $VPN ip daddr $BANNER tcp dport 443 counter accept comment "R-52 Banner"
+    ip saddr $VPN_ADMIN ip daddr $JUMP tcp dport { 22, 3389 } counter accept comment "R-59 IT-Admins to jump host"
+
+    # ADMIN: admin work comes from the jump host only
+    ip saddr $JUMP ip daddr $FAC tcp dport { 3389, 5985, 5986 } counter accept comment "R-54a"
+    ip saddr $JUMP ip daddr $CORE tcp dport { 22, 3389, 5986 } counter accept comment "R-54f"
+    ip saddr $JUMP ip daddr $DC1 tcp dport { 3389, 5986 } counter accept comment "R-54g"
+    ip saddr $JUMP ip daddr { $BANNER, $RECORDS_DB, $PAY } tcp dport { 22, 443 } counter accept comment "R-54h"
+
+    # Server to server
+    ip saddr $UMBRELLA_VA ip daddr $DC1 meta l4proto { tcp, udp } th dport 53 counter accept comment "R-55 internal names"
+    ip saddr $RSTR ip daddr $DC1 tcp dport { 88, 464, 636 } counter accept comment "R-56"
+    ip saddr $RSTR ip daddr $DC1 udp dport { 88, 123, 464 } counter accept comment "R-56"
+    ip saddr $RSTR ip daddr $UMBRELLA_VA meta l4proto { tcp, udp } th dport 53 counter accept comment "R-57 DNS"
+    ip saddr $DC1 ip daddr $UMBRELLA_VA meta l4proto { tcp, udp } th dport 53 counter accept comment "R-58 DNS"
+
+    counter log prefix "CORE R-99 DENY " group 1 drop
+  }
+}

@@ -1,0 +1,48 @@
+#!/usr/sbin/nft -f
+# Edge firewall, final rules. IDs match "Firewall Rules: Campus Network Segmentation".
+# The Edge enforces the Internet rules. VPN traffic to the campus is passed to the Core firewall,
+# which enforces R-50 to R-59. Interfaces: eth1 Internet, eth2 VPN pool, eth3 link to the Core.
+
+table inet edge
+delete table inet edge
+table ip edge_nat
+delete table ip edge_nat
+
+define INTERNAL    = 10.10.0.0/16
+define FAC         = 10.10.10.0/24
+define HVAC        = 10.10.50.100-10.10.50.199
+define UMBRELLA_VA = 10.10.100.10
+define VENDOR      = 203.0.113.20
+define RESOLVER    = 203.0.113.53
+
+table inet edge {
+  # Stands in for Umbrella and threat-intelligence blocking (newly seen and command-and-control).
+  set threat_feed {
+    type ipv4_addr
+    elements = { 203.0.113.66 }
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+
+    ip daddr @threat_feed counter log prefix "EDGE R-05 BLOCK threat-feed " group 1 drop
+    oifname "eth1" udp dport 443 counter drop comment "R-05 QUIC blocked"
+    ip saddr $FAC oifname "eth1" tcp dport { 80, 443 } counter accept comment "R-05 staff web"
+    ip saddr $HVAC ip daddr $VENDOR tcp dport 443 counter accept comment "R-09 controllers to vendor cloud"
+    ip saddr $UMBRELLA_VA ip daddr $RESOLVER meta l4proto { tcp, udp } th dport 53 counter accept comment "R-13 DNS appliance to Umbrella"
+    oifname "eth1" meta l4proto { tcp, udp } th dport { 53, 853 } counter log prefix "EDGE R-71 DENY dns-bypass " group 1 drop
+
+    iifname "eth2" oifname "eth3" ip daddr $INTERNAL counter accept comment "VPN to campus: Core rules R-50 to R-59 apply"
+
+    counter log prefix "EDGE R-99 DENY " group 1 drop
+  }
+}
+
+table ip edge_nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    oifname "eth1" masquerade
+  }
+}

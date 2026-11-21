@@ -1,0 +1,32 @@
+#!/usr/sbin/nft -f
+# Core firewall, loose baseline (the starting point the attacks were traced against).
+# Zones reach each other on any port, and drops are not logged.
+
+table inet core
+delete table inet core
+
+define INTERNAL = 10.10.0.0/16
+define FAC      = 10.10.10.0/24
+define BLDG     = 10.10.50.0/24
+define ADMIN    = 10.10.99.0/24
+define CORE     = 10.10.100.0/24
+define IDENT    = 10.10.105.0/24
+define RSTR     = 10.10.110.0/24
+define VPN      = 10.10.250.0/24
+
+table inet core {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+
+    oifname "eth1" ip daddr != $INTERNAL counter accept comment "to Edge"
+
+    ip saddr $FAC   ip daddr { $CORE, $IDENT, $RSTR, $ADMIN, $BLDG } counter accept comment "R-18 to R-22 any port"
+    ip saddr $BLDG  ip daddr { $CORE, $IDENT, $FAC } counter accept comment "R-35 to R-37 any port"
+    ip saddr $VPN   ip daddr { $FAC, $BLDG, $ADMIN, $CORE, $IDENT, $RSTR } counter accept comment "R-49 VPN to all internal"
+    ip saddr $ADMIN ip daddr { $FAC, $BLDG, $CORE, $IDENT, $RSTR } counter accept comment "R-54 admin to all internal"
+    ip saddr $CORE  ip daddr $IDENT counter accept comment "R-55"
+    ip saddr $RSTR  ip daddr { $IDENT, $CORE } counter accept comment "R-56, R-57"
+    ip saddr $IDENT ip daddr $CORE counter accept comment "R-58"
+  }
+}

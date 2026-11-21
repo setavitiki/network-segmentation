@@ -1,0 +1,152 @@
+# Campus segmentation lab (Containerlab). A working base of the design, not the full campus.
+# Build the images once with ./lab.sh build, then ./lab.sh up. Diagram: ./lab.sh graph
+name: campus
+
+topology:
+  defaults:
+    kind: linux
+    network-mode: none          # no management network: every packet between zones crosses the firewalls
+    image-pull-policy: Never    # images are built locally by ./lab.sh build
+    binds:
+      - bin:/lab/bin:ro
+      - config:/lab/config:ro
+      - rules:/lab/rules:ro
+
+  nodes:
+    # ---------------- Internet (EXT) 203.0.113.0/24 ----------------
+    isp:
+      image: campus/net:latest
+      group: internet
+      env:
+        ROLE: "switch"
+        PORTS: "eth1 eth2 eth3"
+
+    attacker:
+      image: campus/kali:latest
+      group: internet
+      env:
+        ROLE: "host"
+        IFACES: "eth1=203.0.113.66/24"
+
+    cloud:                      # Canvas (.30), HVAC vendor cloud (.20), Internet DNS (.53)
+      image: campus/node:latest
+      group: internet
+      env:
+        ROLE: "cloud"
+        IFACES: "eth1=203.0.113.10/24 eth1=203.0.113.20/24 eth1=203.0.113.30/24 eth1=203.0.113.53/24"
+
+    # ---------------- Edge firewall and VPN pool ----------------
+    edge-fw:
+      image: campus/net:latest
+      group: firewall
+      env:
+        ROLE: "firewall"
+        FW: "edge"
+        IFACES: "eth1=203.0.113.254/24 eth2=10.10.250.254/24 eth3=10.10.255.1/30"
+        ROUTES: "10.10.0.0/16 via 10.10.255.2"
+
+    vpn-laptop:                 # .10 = staff VPN user, .200 = IT-Admins part of the pool
+      image: campus/node:latest
+      group: vpn
+      env:
+        ROLE: "host"
+        IFACES: "eth1=10.10.250.10/24 eth1=10.10.250.200/24"
+        ROUTES: "default via 10.10.250.254"
+        DNS: "10.10.100.10"
+
+    # ---------------- Core firewall and campus switch ----------------
+    core-fw:                    # default gateway for every VLAN (802.1Q sub-interfaces on eth2)
+      image: campus/net:latest
+      group: firewall
+      env:
+        ROLE: "firewall"
+        FW: "core"
+        IFACES: "eth1=10.10.255.2/30 eth2.10=10.10.10.254/24 eth2.50=10.10.50.254/24 eth2.99=10.10.99.254/24 eth2.100=10.10.100.254/24 eth2.105=10.10.105.254/24 eth2.110=10.10.110.254/24"
+        ROUTES: "default via 10.10.255.1"
+
+    campus-sw:                  # eth1 = trunk to core-fw, the rest are access ports (port:VLAN)
+      image: campus/net:latest
+      group: switch
+      env:
+        ROLE: "switch"
+        PORTS: "eth1 eth2 eth3 eth4 eth5 eth6 eth7 eth8"
+        TRUNK: "eth1:10,50,99,100,105,110"
+        ACCESS: "eth2:10 eth3:50 eth4:99 eth5:100 eth6:105 eth7:110 eth8:110"
+
+    # ---------------- Campus zones ----------------
+    staff-pc:                   # FAC, VLAN 10
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "host"
+        IFACES: "eth1=10.10.10.10/24"
+        ROUTES: "default via 10.10.10.254"
+        DNS: "10.10.100.10"
+
+    hvac:                       # BLDG, VLAN 50
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "hvac"
+        IFACES: "eth1=10.10.50.100/24"
+        ROUTES: "default via 10.10.50.254"
+        DNS: "10.10.100.10"
+
+    jump:                       # ADMIN, VLAN 99
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "jump"
+        IFACES: "eth1=10.10.99.10/24"
+        ROUTES: "default via 10.10.99.254"
+        DNS: "10.10.100.10"
+
+    dns:                        # CORE, VLAN 100 (stands in for the Umbrella virtual appliance)
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "dns"
+        IFACES: "eth1=10.10.100.10/24"
+        ROUTES: "default via 10.10.100.254"
+
+    dc1:                        # IDENT, VLAN 105 (Samba Active Directory, domain CAMPUS.LAB)
+      image: campus/dc:latest
+      group: campus
+      env:
+        ROLE: "dc"
+        IFACES: "eth1=10.10.105.10/24"
+        ROUTES: "default via 10.10.105.254"
+        DNS: "127.0.0.1"
+
+    banner:                     # RSTR, VLAN 110: Banner (.10) and payment portal (.30)
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "web"
+        IFACES: "eth1=10.10.110.10/24 eth1=10.10.110.30/24"
+        ROUTES: "default via 10.10.110.254"
+        DNS: "10.10.100.10"
+
+    records-db:                 # RSTR, VLAN 110: records database
+      image: campus/node:latest
+      group: campus
+      env:
+        ROLE: "db"
+        IFACES: "eth1=10.10.110.20/24"
+        ROUTES: "default via 10.10.110.254"
+        DNS: "10.10.100.10"
+
+  links:
+    - endpoints: ["isp:eth1", "edge-fw:eth1"]
+    - endpoints: ["isp:eth2", "attacker:eth1"]
+    - endpoints: ["isp:eth3", "cloud:eth1"]
+    - endpoints: ["edge-fw:eth2", "vpn-laptop:eth1"]
+    - endpoints: ["edge-fw:eth3", "core-fw:eth1"]
+    - endpoints: ["core-fw:eth2", "campus-sw:eth1"]
+    - endpoints: ["campus-sw:eth2", "staff-pc:eth1"]
+    - endpoints: ["campus-sw:eth3", "hvac:eth1"]
+    - endpoints: ["campus-sw:eth4", "jump:eth1"]
+    - endpoints: ["campus-sw:eth5", "dns:eth1"]
+    - endpoints: ["campus-sw:eth6", "dc1:eth1"]
+    - endpoints: ["campus-sw:eth7", "banner:eth1"]
+    - endpoints: ["campus-sw:eth8", "records-db:eth1"]

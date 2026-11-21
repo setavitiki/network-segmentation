@@ -1,0 +1,27 @@
+#!/usr/sbin/nft -f
+# Edge firewall, loose baseline (the starting point the attacks were traced against).
+# Internal zones reach the Internet on any port, and drops are not logged.
+
+table inet edge
+delete table inet edge
+table ip edge_nat
+delete table ip edge_nat
+
+define INTERNAL = 10.10.0.0/16
+
+table inet edge {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+
+    ip saddr $INTERNAL oifname "eth1" counter accept comment "R-05 to R-17 internal to Internet, any port"
+    iifname "eth2" oifname "eth3" counter accept comment "VPN to campus"
+  }
+}
+
+table ip edge_nat {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    oifname "eth1" masquerade
+  }
+}
